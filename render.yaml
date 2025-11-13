@@ -122,7 +122,7 @@ services:
       AccountPlayerSchema.index({ accountId: 1, playerId: 1 }, { unique: true });
       export default mongoose.model('AccountPlayer', AccountPlayerSchema);
       JS
-      # routes
+      # routes/accounts.js
       cat > api/routes/accounts.js <<'JS'
       import express from 'express';
       import Account from '../models/Account.js';
@@ -173,6 +173,7 @@ services:
       });
       export default router;
       JS
+      # routes/players.js
       cat > api/routes/players.js <<'JS'
       import express from 'express';
       import Player from '../models/Player.js';
@@ -192,6 +193,7 @@ services:
       });
       export default router;
       JS
+      # routes/stats.js
       cat > api/routes/stats.js <<'JS'
       import express from 'express';
       import Account from '../models/Account.js';
@@ -213,11 +215,11 @@ services:
       - key: PORT
         value: "3000"
       - key: ALLOWED_ORIGINS
-        value: https://dashboard.ut-gaming.info
+        value: https://ut-web-0qad.onrender.com
 
   # ============ Dashboard (React/Vite → Static) ============
   - type: web
-    name: ut-web
+    name: ut-web-0qad
     env: static
     rootDir: .
     buildCommand: |
@@ -236,75 +238,804 @@ services:
       JSON
       cat > web/index.html <<'HTML'
       <!doctype html>
-      <html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>UT Gaming Dashboard</title></head>
-      <body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>
+      <html>
+        <head>
+          <meta charset="UTF-8"/>
+          <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+          <title>UT Gaming Dashboard</title>
+        </head>
+        <body>
+          <div id="root"></div>
+          <script type="module" src="/src/main.jsx"></script>
+        </body>
+      </html>
       HTML
       cat > web/src/main.jsx <<'JSX'
-      import React from 'react'
-      import { createRoot } from 'react-dom/client'
-      import App from './App.jsx'
-      createRoot(document.getElementById('root')).render(<App />)
+      import React from 'react';
+      import { createRoot } from 'react-dom/client';
+      import App from './App.jsx';
+      createRoot(document.getElementById('root')).render(<App />);
       JSX
       cat > web/src/App.jsx <<'JSX'
-      import React, { useState, useEffect } from 'react';
-      function n(x){return (x==null||isNaN(x))?'-':new Intl.NumberFormat().format(x)}
-      async function api(path,{base, key, method='GET', body}){
-        const res = await fetch(base.replace(/\/$/,'')+path,{method,headers:{'content-type':'application/json','x-api-key':key}, body: body?JSON.stringify(body):undefined});
-        if(!res.ok) throw new Error(await res.text()); return res.json();
+      import React, { useState, useEffect, useMemo } from "react";
+
+      function formatNumber(x) {
+        if (x == null || isNaN(x)) return "-";
+        return new Intl.NumberFormat().format(x);
       }
-      export default function App(){
-        const [base,setBase]=useState('https://api.ut-gaming.info');
-        const [key,setKey]=useState('ut_gaming_9837xKEY');
-        const [accounts,setAccounts]=useState([]); const [sel,setSel]=useState(null);
-        const [summary,setSummary]=useState(null); const [players,setPlayers]=useState([]);
-        async function load(){ const a=await api('/api/accounts',{base, key}); setAccounts(a); if(a[0]) setSel(a[0]); }
-        async function loadSel(id){ const s=await api(`/api/${'accounts'}/${id}/summary`,{base,key}); setSummary(s); const p=await api(`/api/accounts/${id}/players`,{base,key}); setPlayers(p); }
-        useEffect(()=>{ if(sel?._id){ loadSel(sel._id); } },[sel]);
-        return (<div style={{fontFamily:'sans-serif',padding:16,maxWidth:1080,margin:'0 auto'}}>
-          <h2>UT Gaming — Dashboard</h2>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'8px 0'}}>
-            <input value={base} onChange={e=>setBase(e.target.value)} placeholder="API Base URL" style={{padding:6,minWidth:360}} />
-            <input value={key} onChange={e=>setKey(e.target.value)} placeholder="x-api-key" style={{padding:6,minWidth:240}} />
-            <button onClick={load}>Reload</button>
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 2fr',gap:16}}>
-            <div>
-              <h3>Accounts</h3>
-              <ul style={{border:'1px solid #ddd',padding:8,maxHeight:320,overflow:'auto',listStyle:'none'}}>
-                {accounts.map(a=>(
-                  <li key={a._id} onClick={()=>setSel(a)} style={{padding:6,cursor:'pointer',background: sel?._id===a._id?'#f6f6f6':''}}>
-                    {a.username} — <b>{a.platform}</b> — coins: {n(a.coins)}
-                  </li>
-                ))}
-              </ul>
+
+      async function api(path, { base, key, method = "GET", body }) {
+        const url = base.replace(/\/$/, "") + path;
+        const res = await fetch(url, {
+          method,
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": key,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || \`Request failed: \${res.status}\`);
+        }
+        return res.json();
+      }
+
+      function getStatusInfo(account) {
+        const s = account?.status || "ok";
+        if (s === "banned") {
+          return {
+            label: "BANNED",
+            color: "#ff4b6a",
+            bg: "#3b0713",
+          };
+        }
+        if (s === "locked") {
+          return {
+            label: "LOCKED",
+            color: "#ffb74d",
+            bg: "#3b2607",
+          };
+        }
+        return {
+          label: "ACTIVE",
+          color: "#7CFC8A",
+          bg: "#12351d",
+        };
+      }
+
+      function isStale(account) {
+        if (!account?.lastCheckedAt) return true;
+        const last = new Date(account.lastCheckedAt);
+        if (Number.isNaN(last.getTime())) return false;
+        const diffMs = Date.now() - last.getTime();
+        const diffDays = diffMs / (1000 * 60 * 60 * 24);
+        return diffDays > 2;
+      }
+
+      function SummaryCard({ label, value, highlight }) {
+        return (
+          <div
+            style={{
+              background: highlight
+                ? "linear-gradient(135deg,#111628,#17253f)"
+                : "#070d1e",
+              borderRadius: 12,
+              padding: 10,
+              border: "1px solid #232a45",
+            }}
+          >
+            <div style={{ fontSize: 11, opacity: 0.75 }}>{label}</div>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 700,
+                color: highlight ? "#27c9ff" : "#f5f5f5",
+              }}
+            >
+              {value}
             </div>
-            <div>
-              <h3>Summary</h3>
-              {summary ? <div style={{border:'1px solid #ddd',padding:8}}>
-                <div>Coins: <b>{n(summary.coins)}</b></div>
-                <div>Total Players: <b>{n(summary.totalPlayers)}</b></div>
-                <div>Market Value: <b>{n(summary.totalMarketValue)}</b></div>
-                <div>Club Value: <b>{n(summary.clubValue)}</b></div>
-              </div> : <div>—</div>}
-              <h3 style={{marginTop:12}}>Players</h3>
-              <table style={{width:'100%',borderCollapse:'collapse'}}>
-                <thead><tr><th style={{textAlign:'left',borderBottom:'1px solid #ddd'}}>Name</th><th style={{borderBottom:'1px solid #ddd'}}>Pos</th><th style={{borderBottom:'1px solid #ddd'}}>Qual</th><th style={{borderBottom:'1px solid #ddd'}}>Rating</th><th style={{borderBottom:'1px solid #ddd'}}>Qty</th><th style={{borderBottom:'1px solid #ddd'}}>Price</th></tr></thead>
-                <tbody>
-                  {players.map((p,i)=>(
-                    <tr key={p.playerId+'-'+i}>
-                      <td style={{borderBottom:'1px solid #eee'}}>{p.name}</td>
-                      <td style={{borderBottom:'1px solid #eee',textAlign:'center'}}>{p.position}</td>
-                      <td style={{borderBottom:'1px solid #eee',textAlign:'center'}}>{p.quality}</td>
-                      <td style={{borderBottom:'1px solid #eee',textAlign:'center'}}>{p.rating}</td>
-                      <td style={{borderBottom:'1px solid #eee',textAlign:'center'}}>{p.quantity}</td>
-                      <td style={{borderBottom:'1px solid #eee',textAlign:'right'}}>{n(p.sellValue)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </div>
-        </div>);
+        );
+      }
+
+      export default function App() {
+        const [base, setBase] = useState("https://ut-api-0qad.onrender.com");
+        const [key, setKey] = useState("ut_gaming_9837xKEY");
+
+        const [accounts, setAccounts] = useState([]);
+        const [selectedId, setSelectedId] = useState(null);
+        const [selectedSummary, setSelectedSummary] = useState(null);
+        const [players, setPlayers] = useState([]);
+        const [loading, setLoading] = useState(false);
+        const [loadingAccount, setLoadingAccount] = useState(false);
+        const [error, setError] = useState("");
+
+        const selectedAccount = useMemo(
+          () => accounts.find((a) => a._id === selectedId) || null,
+          [accounts, selectedId]
+        );
+
+        async function loadAccounts() {
+          try {
+            setLoading(true);
+            setError("");
+            const data = await api("/api/accounts", { base, key });
+            setAccounts(data || []);
+            if (data && data.length && !selectedId) {
+              setSelectedId(data[0]._id);
+            }
+          } catch (e) {
+            setError(e.message || "Failed to load accounts");
+            setAccounts([]);
+            setSelectedId(null);
+            setSelectedSummary(null);
+            setPlayers([]);
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        async function loadSelectedAccountDetails(id) {
+          if (!id) return;
+          try {
+            setLoadingAccount(true);
+            setError("");
+            const summary = await api(\`/api/accounts/\${id}/summary\`, { base, key });
+            const accPlayers = await api(\`/api/accounts/\${id}/players\`, {
+              base,
+              key,
+            });
+            setSelectedSummary(summary || null);
+            setPlayers(accPlayers || []);
+          } catch (e) {
+            setError(e.message || "Failed to load account details");
+            setSelectedSummary(null);
+            setPlayers([]);
+          } finally {
+            setLoadingAccount(false);
+          }
+        }
+
+        useEffect(() => {
+          loadAccounts();
+        }, []);
+
+        useEffect(() => {
+          if (selectedId) {
+            loadSelectedAccountDetails(selectedId);
+          } else {
+            setSelectedSummary(null);
+            setPlayers([]);
+          }
+        }, [selectedId]);
+
+        const totalCoinsAllAccounts = useMemo(
+          () => accounts.reduce((sum, a) => sum + (a.coins || 0), 0),
+          [accounts]
+        );
+
+        const lockedCount = useMemo(
+          () => accounts.filter((a) => a.status === "locked").length,
+          [accounts]
+        );
+        const bannedCount = useMemo(
+          () => accounts.filter((a) => a.status === "banned").length,
+          [accounts]
+        );
+
+        const sortedPlayers = useMemo(() => {
+          const arr = [...players];
+          arr.sort(
+            (a, b) =>
+              (b.rating || 0) - (a.rating || 0) ||
+              (b.sellValue || 0) - (a.sellValue || 0)
+          );
+          return arr;
+        }, [players]);
+
+        return (
+          <div
+            style={{
+              minHeight: "100vh",
+              margin: 0,
+              background:
+                "radial-gradient(circle at top, #182134 0, #050812 45%, #020308 100%)",
+              color: "#f5f5f5",
+              fontFamily:
+                "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+            }}
+          >
+            <header
+              style={{
+                padding: "14px 22px",
+                borderBottom: "1px solid #14182b",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background:
+                  "linear-gradient(120deg, rgba(39,201,255,0.16), rgba(0,0,0,0))",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>
+                  UT <span style={{ color: "#27c9ff" }}>Gaming</span>{" "}
+                  <span style={{ opacity: 0.9 }}>Dashboard</span>
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  FC 26 Accounts • Coins • Club Overview
+                </div>
+              </div>
+              <div style={{ textAlign: "right", fontSize: 11 }}>
+                <div style={{ opacity: 0.7 }}>API Base URL</div>
+                <div
+                  style={{
+                    color: "#9be7ff",
+                    fontSize: 11,
+                    maxWidth: 260,
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {base}
+                </div>
+              </div>
+            </header>
+
+            <div
+              style={{
+                padding: "10px 16px",
+                borderBottom: "1px solid #14182b",
+                background: "#050813",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <input
+                  value={base}
+                  onChange={(e) => setBase(e.target.value)}
+                  placeholder="API Base URL"
+                  style={{
+                    padding: 8,
+                    minWidth: 260,
+                    borderRadius: 6,
+                    border: "1px solid #20263b",
+                    background: "#050814",
+                    color: "#f5f5f5",
+                    fontSize: 12,
+                  }}
+                />
+                <input
+                  value={key}
+                  onChange={(e) => setKey(e.target.value)}
+                  placeholder="x-api-key"
+                  style={{
+                    padding: 8,
+                    minWidth: 220,
+                    borderRadius: 6,
+                    border: "1px solid #20263b",
+                    background: "#050814",
+                    color: "#f5f5f5",
+                    fontSize: 12,
+                  }}
+                />
+                <button
+                  onClick={loadAccounts}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 999,
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: "linear-gradient(135deg,#27c9ff,#00ffa3)",
+                    color: "#050810",
+                  }}
+                >
+                  {loading ? "Loading..." : "Reload accounts"}
+                </button>
+                {loadingAccount && (
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>
+                    Loading account…
+                  </span>
+                )}
+                {error && (
+                  <span
+                    style={{ fontSize: 11, color: "#ff7b7b", marginLeft: 8 }}
+                  >
+                    {error}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <section
+              style={{
+                padding: 16,
+                paddingBottom: 8,
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  background: "linear-gradient(135deg,#111628,#171f3a)",
+                  borderRadius: 12,
+                  padding: 10,
+                  border: "1px solid #232a45",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.75 }}>
+                  Total Coins (all)
+                </div>
+                <div
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: "#27c9ff",
+                  }}
+                >
+                  {formatNumber(totalCoinsAllAccounts)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>
+                  {accounts.length} account(s)
+                </div>
+              </div>
+              <div
+                style={{
+                  background: "#070d1e",
+                  borderRadius: 12,
+                  padding: 10,
+                  border: "1px solid #232a45",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.75 }}>
+                  Locked accounts
+                </div>
+                <div
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: "#ffb74d",
+                  }}
+                >
+                  {lockedCount}
+                </div>
+              </div>
+              <div
+                style={{
+                  background: "#070d1e",
+                  borderRadius: 12,
+                  padding: 10,
+                  border: "1px solid #232a45",
+                }}
+              >
+                <div style={{ fontSize: 11, opacity: 0.75 }}>
+                  Banned accounts
+                </div>
+                <div
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: "#ff4b6a",
+                  }}
+                >
+                  {bannedCount}
+                </div>
+              </div>
+              {selectedAccount && (
+                <div
+                  style={{
+                    background: "#070d1e",
+                    borderRadius: 12,
+                    padding: 10,
+                    border: "1px solid #232a45",
+                  }}
+                >
+                  <div style={{ fontSize: 11, opacity: 0.75 }}>
+                    Selected account
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>
+                    {selectedAccount.username}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.8 }}>
+                    Coins: {formatNumber(selectedAccount.coins)}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <main
+              style={{
+                padding: 16,
+                paddingTop: 8,
+                display: "grid",
+                gridTemplateColumns: "minmax(260px,320px) minmax(0,1fr)",
+                gap: 16,
+              }}
+            >
+              <section
+                style={{
+                  background: "#050814",
+                  borderRadius: 14,
+                  border: "1px solid #15192b",
+                  padding: 10,
+                  maxHeight: "calc(100vh - 170px)",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: 8,
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>
+                    Accounts
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>
+                    {accounts.length} total
+                  </div>
+                </div>
+                <div
+                  style={{
+                    overflowY: "auto",
+                    paddingRight: 4,
+                    borderRadius: 8,
+                  }}
+                >
+                  {accounts.length === 0 && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        opacity: 0.7,
+                        padding: 8,
+                      }}
+                    >
+                      No accounts found. Insert accounts via API then reload.
+                    </div>
+                  )}
+                  {accounts.map((acc) => {
+                    const status = getStatusInfo(acc);
+                    const stale = isStale(acc);
+                    return (
+                      <div
+                        key={acc._id}
+                        onClick={() => setSelectedId(acc._id)}
+                        style={{
+                          padding: "8px 10px",
+                          marginBottom: 6,
+                          borderRadius: 10,
+                          cursor: "pointer",
+                          background:
+                            selectedId === acc._id ? "#151b32" : "#070b1a",
+                          border:
+                            selectedId === acc._id
+                              ? "1px solid rgba(39,201,255,0.8)"
+                              : "1px solid #101426",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 4,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                          }}
+                        >
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>
+                            {acc.username}
+                          </span>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "2px 7px",
+                                borderRadius: 999,
+                                background: "#11182c",
+                                color: "#9be7ff",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              {acc.platform || "pc"}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "2px 7px",
+                                borderRadius: 999,
+                                background: status.bg,
+                                color: status.color,
+                                fontWeight: 600,
+                              }}
+                            >
+                              {status.label}
+                            </span>
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            fontSize: 11,
+                            opacity: 0.85,
+                          }}
+                        >
+                          <span>
+                            Coins:{" "}
+                            <b style={{ color: "#27c9ff" }}>
+                              {formatNumber(acc.coins)}
+                            </b>
+                          </span>
+                          {stale && (
+                            <span style={{ color: "#ffb74d" }}>
+                              Needs check ⚠️
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, opacity: 0.6 }}>
+                          Last check:{" "}
+                          {acc.lastCheckedAt
+                            ? new Date(
+                                acc.lastCheckedAt
+                              ).toLocaleString()
+                            : "never"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  minHeight: 260,
+                }}
+              >
+                <div
+                  style={{
+                    background: "#050814",
+                    borderRadius: 14,
+                    border: "1px solid #15192b",
+                    padding: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>
+                        Account info
+                      </div>
+                      <div style={{ fontSize: 11, opacity: 0.7 }}>
+                        {selectedAccount
+                          ? selectedAccount.username
+                          : "No account selected"}
+                      </div>
+                    </div>
+                    {selectedSummary && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          textAlign: "right",
+                          opacity: 0.75,
+                        }}
+                      >
+                        Updated:{" "}
+                        {selectedSummary.lastCheckedAt
+                          ? new Date(
+                              selectedSummary.lastCheckedAt
+                            ).toLocaleString()
+                          : "-"}
+                      </div>
+                    )}
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(auto-fit,minmax(150px,1fr))",
+                      gap: 8,
+                    }}
+                  >
+                    <SummaryCard
+                      label="Coins"
+                      value={formatNumber(
+                        selectedSummary?.coins ??
+                          selectedAccount?.coins ??
+                          0
+                      )}
+                      highlight
+                    />
+                    <SummaryCard
+                      label="Total players"
+                      value={formatNumber(
+                        selectedSummary?.totalPlayers || 0
+                      )}
+                    />
+                    <SummaryCard
+                      label="Market value"
+                      value={formatNumber(
+                        selectedSummary?.totalMarketValue || 0
+                      )}
+                    />
+                    <SummaryCard
+                      label="Club value"
+                      value={formatNumber(
+                        selectedSummary?.clubValue || 0
+                      )}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: "#050814",
+                    borderRadius: 14,
+                    border: "1px solid #15192b",
+                    padding: 12,
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 240,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>
+                      Players
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.75 }}>
+                      {players.length} item(s)
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      flex: 1,
+                      overflowY: "auto",
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(auto-fit,minmax(190px,1fr))",
+                      gap: 10,
+                    }}
+                  >
+                    {sortedPlayers.length === 0 && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          opacity: 0.7,
+                          padding: 8,
+                          gridColumn: "1 / -1",
+                        }}
+                      >
+                        No players for this account yet.
+                      </div>
+                    )}
+
+                    {sortedPlayers.map((p, i) => {
+                      const big = (p.sellValue || 0) >= 100000;
+                      return (
+                        <div
+                          key={p.playerId + "-" + i}
+                          style={{
+                            borderRadius: 12,
+                            padding: 10,
+                            background: big
+                              ? "linear-gradient(145deg,#26213f,#40286a)"
+                              : "#080c1b",
+                            border: big
+                              ? "1px solid rgba(255,215,0,0.55)"
+                              : "1px solid #181e34",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 4,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                            }}
+                          >
+                            <div>
+                              <div
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  marginBottom: 2,
+                                }}
+                              >
+                                {p.name || "Unknown"}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  opacity: 0.8,
+                                  display: "flex",
+                                  gap: 6,
+                                  alignItems: "center",
+                                }}
+                              >
+                                <span>{p.position || "-"}</span>
+                                <span>•</span>
+                                <span>{p.quality || "-"}</span>
+                              </div>
+                            </div>
+                            <div
+                              style={{ textAlign: "right", minWidth: 46 }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: 16,
+                                  fontWeight: 700,
+                                  color: "#ffd761",
+                                }}
+                              >
+                                {p.rating || "-"}
+                              </div>
+                              <div
+                                style={{ fontSize: 10, opacity: 0.8 }}
+                              >
+                                OVR
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              fontSize: 11,
+                              marginTop: 4,
+                            }}
+                          >
+                            <span>
+                              Qty:{" "}
+                              <b>
+                                {p.quantity != null ? p.quantity : "-"}
+                              </b>
+                            </span>
+                            <span>
+                              Price:{" "}
+                              <b>{formatNumber(p.sellValue || 0)}</b>
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            </main>
+          </div>
+        );
       }
       JSX
       cd web
