@@ -18,7 +18,7 @@ services:
     domains:
       - api.ut-gaming.info
 
-  - type: static
+  - type: static_site
     name: ut-web
     plan: free
     rootDir: web
