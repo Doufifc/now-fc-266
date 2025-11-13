@@ -18,11 +18,13 @@ services:
     domains:
       - api.ut-gaming.info
 
-  - type: static_site
+  - type: web
     name: ut-web
+    env: static
     plan: free
     rootDir: web
     buildCommand: "npm install && npm run build"
+    startCommand: ""
     staticPublishPath: "dist"
     domains:
       - dashboard.ut-gaming.info
