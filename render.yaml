@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: ut-api
+    env: node
+    plan: free
+    rootDir: api
+    buildCommand: "npm install"
+    startCommand: "node server.js"
+    envVars:
+      - key: MONGO_URI
+        value: mongodb+srv://doufi:Ossama00.aA%40@cluster0.7gbw6tf.mongodb.net/fc26?retryWrites=true&w=majority&appName=Cluster0
+      - key: API_KEY
+        value: ut_gaming_9837xKEY
+      - key: PORT
+        value: "3000"
+      - key: ALLOWED_ORIGINS
+        value: https://dashboard.ut-gaming.info
+    domains:
+      - api.ut-gaming.info
+
+  - type: static
+    name: ut-web
+    plan: free
+    rootDir: web
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: "dist"
+    domains:
+      - dashboard.ut-gaming.info
+
+  - type: worker
+    name: ut-worker
+    env: node
+    plan: free
+    rootDir: worker
+    buildCommand: "npm install"
+    startCommand: "node checker.js"
+    envVars:
+      - key: BASE_URL
+        value: https://api.ut-gaming.info
+      - key: API_KEY
+        value: ut_gaming_9837xKEY
+      - key: ACCOUNT_ID
+        sync: false
+      - key: EA_EMAIL
+        sync: false
+      - key: EA_PASSWORD
+        sync: false
+      - key: EA_COOKIES_JSON
+        sync: false
+      - key: PROXY_URL
+        sync: false
